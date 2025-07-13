@@ -1,188 +1,93 @@
-# Stock Analysis Bot with AI Integration
+# 📈 stock_mf-predict-algo
 
-A comprehensive Telegram bot for stock analysis using multiple AI services including Grok, Gemini, Hugging Face, Ollama, and more.
+A powerful, user-friendly Telegram bot for stock and mutual fund analysis, powered by advanced AI models and technical indicators.
+This project is designed for retail investors, traders, and finance enthusiasts who want actionable insights, trading signals, and AI-powered recommendations—all from a simple chat interface.
 
-## Features
+---
 
-- 📊 **Technical Analysis**: RSI, MACD, Supertrend, and more indicators
-- 🤖 **AI Integration**: Multiple free AI services for sentiment analysis
-- 📈 **Interactive Charts**: Plotly-based interactive stock charts
-- 💡 **Trading Recommendations**: Buy/Sell/Hold advice with confidence scores
-- 🔄 **Free AI Fallback**: Automatic fallback between multiple AI providers
-- 📱 **Telegram Bot**: Easy-to-use commands and interactive buttons
+### **Key Features**
 
-## Commands
+- **Multi-Model AI Analysis:**
+  Integrates with top AI providers (Ollama, Gemini, Hugging Face, Anthropic, OpenAI, DeepSeek, Grok) for stock and mutual fund analysis.
+  Users can select their preferred AI model per session, just like in Cursor.
 
-- `/start` - Welcome message and help
-- `/analyze <symbol>` - Basic stock analysis
-- `/advanced <symbol>` - Advanced analysis with AI
-- `/grok <symbol>` - Deep analysis using Grok AI
-- `/freeai <symbol>` - Analysis using free AI services
-- `/ask <symbol> BUY/SELL/HOLD <quantity> <price>` - Specific trading advice
-- `/recommend <symbol>` - Detailed trading recommendations
-- `/help` - Show all available commands
+- **Secure API Key Management:**
+  API keys are stored in a local `config.py` (never pushed to Git), with a template and `.gitignore` for best security practices.
 
-## New: Per-User AI Model Selection
+- **Comprehensive Stock & MF Analysis:**
+  - Technical indicators: RSI, MACD, Supertrend, moving averages, and more.
+  - AI-powered sentiment, confidence, and trading recommendations.
+  - Interactive Plotly charts for visual analysis.
+  - News sentiment and layman-friendly advice.
 
-You can now choose which AI model/provider to use for your analysis, just like in Cursor!
+- **Telegram Bot Commands:**
+  - `/analyze <symbol>`: Basic technical analysis.
+  - `/advanced <symbol>`: Advanced analysis with AI.
+  - `/grok <symbol>`: Deep analysis using Grok AI.
+  - `/freeai <symbol>`: Use free AI services for analysis.
+  - `/ask <symbol> BUY/SELL/HOLD <qty> <price>`: Get advice for specific trades.
+  - `/recommend <symbol>`: Detailed trading recommendations (stop loss, targets, holding period, etc.).
+  - `/model <model_name>`: Select your preferred AI model/provider.
+  - `/help`: List all commands.
 
-### /model Command
+- **Per-User Model Selection:**
+  Each user can choose their preferred AI model for analysis, with easy switching via `/model`.
 
-- `/model` — Shows your current model and all available options
-- `/model <model_name>` — Sets your preferred model (e.g., `/model gemini`)
+- **Mutual Fund Support:**
+  Recognizes and analyzes mutual fund symbols, providing tailored advice.
 
-Your choice is remembered for your session. All analysis commands (`/freeai`, `/ask`, `/recommend`, etc.) will use your selected model if set, otherwise the default fallback order is used.
+- **Free AI Fallback:**
+  Automatically falls back to available free AI providers if one is unavailable or rate-limited.
 
-**Available models:**
-- ollama
-- gemini
-- huggingface
-- anthropic
-- openai_free
-- deepseek
-- grok
+- **Easy Setup:**
+  - One-command setup script (`setup.py`)
+  - Clear README and config templates
+  - No sensitive data in version control
 
-**Example:**
-```
-/model gemini
-/freeai TCS.NS
-```
-This will analyze TCS.NS using Gemini for your user session.
+---
 
-If you want to switch back to automatic fallback, just use `/model` and do not select a model.
+### **Tech Stack**
 
-## Setup Instructions
+- **Python 3.8+**
+- **Telegram Bot API**
+- **Pandas, NumPy, yfinance** (for data)
+- **Plotly** (for charts)
+- **Multiple AI APIs** (Ollama, Gemini, Hugging Face, Anthropic, OpenAI, DeepSeek, Grok)
+- **Pydantic** (for structured AI responses)
 
-### 1. Install Dependencies
+---
 
-```bash
-pip install -r requirements.txt
-```
+### **Security**
 
-### 2. Configure API Keys
+- All API keys are stored locally in `config.py` (never committed).
+- `.gitignore` and `config_template.py` ensure safe sharing and deployment.
 
-**IMPORTANT**: Never commit your actual API keys to Git!
+---
 
-1. Copy the template file:
-   ```bash
-   cp config_template.py config.py
-   ```
+### **Getting Started**
 
-2. Edit `config.py` and add your API keys:
-   ```python
-   # Grok API Configuration
-   GROK_API_KEY = "your_actual_grok_api_key"
+1. Clone the repo
+2. Run `python setup.py`
+3. Add your API keys to `config.py`
+4. Start the bot: `python backtest.py`
+5. Use Telegram commands to analyze stocks and mutual funds
 
-   # Free AI API Keys
-   GEMINI_API_KEY = "your_actual_gemini_api_key"
-   HUGGINGFACE_API_KEY = "your_actual_huggingface_api_key"
-   ANTHROPIC_API_KEY = "your_actual_anthropic_api_key"
-   OPENAI_API_KEY = "your_actual_openai_api_key"
+---
 
-   # Bot Configuration
-   BOT_TOKEN = "your_actual_telegram_bot_token"
-   CHAT_ID = "your_actual_chat_id"
-   ```
+### **Use Cases**
 
-### 3. Get API Keys
+- Retail investors seeking AI-powered stock/mutual fund advice
+- Traders wanting technical and sentiment analysis in one place
+- Developers looking for a secure, extensible AI bot template
 
-#### Telegram Bot Token
-1. Message @BotFather on Telegram
-2. Create a new bot with `/newbot`
-3. Copy the token to `BOT_TOKEN`
+---
 
-#### Free AI Services
+### **Disclaimer**
 
-**Google Gemini** (Recommended - 15 requests/minute):
-- Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
-- Create API key
-- Add to `GEMINI_API_KEY`
+This project is for educational purposes only.
+It does not constitute financial advice.
+Always do your own research and consult a professional before making investment decisions.
 
-**Hugging Face** (30,000 requests/month):
-- Visit [Hugging Face](https://huggingface.co/settings/tokens)
-- Create access token
-- Add to `HUGGINGFACE_API_KEY`
+---
 
-**Anthropic Claude** (5 requests/minute):
-- Visit [Anthropic Console](https://console.anthropic.com/)
-- Create API key
-- Add to `ANTHROPIC_API_KEY`
-
-**OpenAI** (Limited free tier):
-- Visit [OpenAI Platform](https://platform.openai.com/api-keys)
-- Create API key
-- Add to `OPENAI_API_KEY`
-
-**Ollama** (Local - Unlimited):
-- Install [Ollama](https://ollama.ai/)
-- Run `ollama pull llama3.2`
-- Start with `ollama serve`
-
-### 4. Run the Bot
-
-```bash
-python backtest.py
-```
-
-## Security
-
-- ✅ `config.py` is in `.gitignore` - never committed to Git
-- ✅ `config_template.py` shows structure without real keys
-- ✅ Environment variables supported as fallback
-- ✅ API keys are loaded securely
-
-## File Structure
-
-```
-├── backtest.py              # Main bot file
-├── free_ai_integration.py   # Free AI services integration
-├── config.py               # API keys (not in Git)
-├── config_template.py      # Template for config
-├── requirements.txt        # Python dependencies
-├── .gitignore             # Git ignore rules
-└── README.md              # This file
-```
-
-## Supported Stock Symbols
-
-- **US Stocks**: AAPL, GOOGL, MSFT, etc.
-- **Indian Stocks**: TCS.NS, RELIANCE.NS, etc.
-- **Mutual Funds**: Basic support for fund symbols
-
-## AI Provider Priority
-
-1. **Ollama** (Local) - Unlimited requests
-2. **Gemini** - 15 requests/minute
-3. **Hugging Face** - 30,000 requests/month
-4. **Anthropic** - 5 requests/minute
-5. **OpenAI** - Limited free tier
-6. **DeepSeek** - Disabled (insufficient balance)
-
-## Troubleshooting
-
-### Bot Not Responding
-- Check `BOT_TOKEN` in config.py
-- Ensure bot is added to your chat
-- Check `CHAT_ID` is correct
-
-### AI Analysis Failing
-- Verify API keys are correct
-- Check internet connection
-- Try different AI providers
-
-### Ollama Not Working
-- Install Ollama: https://ollama.ai/
-- Run `ollama serve`
-- Pull a model: `ollama pull llama3.2`
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## License
-
-This project is for educational purposes. Use at your own risk for trading decisions.
+**Happy Trading! 🚀**
