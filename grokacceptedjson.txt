@@ -1,0 +1,17 @@
+{
+  "vendor_name": "Acme Corp",
+  "vendor_address": {
+    "street": "123 Main St",
+    "city": "Springfield",
+    "postal_code": "62704",
+    "country": "IL"
+  },
+  "invoice_number": "INV-2025-001",
+  "invoice_date": "2025-02-10",
+  "line_items": [
+    {"description": "Widget A", "quantity": 5, "unit_price": 10.0},
+    {"description": "Widget B", "quantity": 2, "unit_price": 15.0}
+  ],
+  "total_amount": 80.0,
+  "currency": "USD"
+}
