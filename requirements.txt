@@ -1,0 +1,14 @@
+yfinance
+pandas
+numpy
+python-telegram-bot
+scikit-learn
+openai
+xai-sdk
+pydantic
+plotly
+kaleido
+requests
+anthropic
+google-generativeai
+transformers
