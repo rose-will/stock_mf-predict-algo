@@ -12,55 +12,44 @@ from datetime import datetime
 import time
 
 # Import configuration
-try:
-    from config import *
-    print("✅ Free AI config loaded from config.py")
-except ImportError:
-    print("⚠️ config.py not found. Using environment variables and defaults")
-    # Fallback values
-    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-    HUGGINGFACE_API_KEY = os.getenv('HUGGINGFACE_API_KEY', '')
-    ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
-    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
-    DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
-    OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2')
+# Import get_secret from dashboard.py for secure secret retrieval
+from dashboard import get_secret
 
 # Configuration for free AI services
 FREE_AI_CONFIG = {
     'huggingface': {
         'enabled': True,
-        'api_key': HUGGINGFACE_API_KEY,
+        'api_key': get_secret('huggingface_api_key', ''),
         'models': ['microsoft/DialoGPT-medium', 'gpt2'],
         'requests_per_month': 30000
     },
     'ollama': {
         'enabled': True,  # Enabled for local LLMs
-        'url': OLLAMA_BASE_URL,
-        'models': [OLLAMA_MODEL, 'llama2', 'mistral', 'codellama'],
+        'url': get_secret('ollama_base_url', 'http://localhost:11434'),
+        'models': [get_secret('ollama_model', 'llama3.2'), 'llama2', 'mistral', 'codellama'],
         'requests_per_month': float('inf')  # Unlimited
     },
     'openai_free': {
         'enabled': True,
-        'api_key': OPENAI_API_KEY,
+        'api_key': get_secret('openai_api_key', ''),
         'model': 'gpt-3.5-turbo',
         'requests_per_month': 1000  # Approximate
     },
     'anthropic': {
         'enabled': True,
-        'api_key': ANTHROPIC_API_KEY,
+        'api_key': get_secret('anthropic_api_key', ''),
         'model': 'claude-3-haiku-20240307',
         'requests_per_month': 43200  # 5 per minute * 24 * 30
     },
     'gemini': {
         'enabled': True,
-        'api_key': GEMINI_API_KEY,
+        'api_key': get_secret('gemini_api_key', ''),
         'model': 'gemini-2.0-flash',
         'requests_per_month': 64800  # 15 per minute * 24 * 30
     },
     'deepseek': {
         'enabled': False,  # Disabled due to insufficient balance
-        'api_key': DEEPSEEK_API_KEY,
+        'api_key': get_secret('deepseek_api_key', ''),
         'model': 'deepseek-chat',
         'base_url': 'https://api.deepseek.com',
         'requests_per_month': 1000  # Approximate free tier limit

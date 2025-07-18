@@ -82,6 +82,36 @@ This project is designed for retail investors, traders, and finance enthusiasts 
 
 ---
 
+### **Deployment**
+
+- **Streamlit Dashboard:**
+  1. Run `streamlit run dashboard.py` to launch the dashboard UI (default port 8501).
+  2. Log in as admin to set API keys, secrets, and the REST API key in the sidebar.
+  3. The dashboard will also start a REST API (FastAPI) server on port 8000 by default.
+
+- **REST API (Unified Recommendation):**
+  - All `/api/unified` endpoints require an `X-API-Key` header for authentication.
+  - Set the API key in the dashboard sidebar (admin only).
+  - Example usage:
+    ```bash
+    curl -H "X-API-Key: <your_api_key>" "http://localhost:8000/api/unified?symbol=NIFTY"
+    ```
+  - For production, run behind a reverse proxy (e.g., nginx) and enable HTTPS.
+  - **Advanced:** You can enable JWT authentication for the API by replacing the API key logic with JWT token validation (see FastAPI docs for details).
+
+- **Telegram Bot:**
+  - Start the bot with `python backtest.py` (ensure your Telegram bot token is set in the dashboard or config).
+
+- **Environment Variables:**
+  - For production, set sensitive values (API keys, DB encryption key) via environment variables or secrets management.
+
+- **Security Best Practices:**
+  - Never commit `config.py` or secrets to version control.
+  - Use strong, unique API keys or JWT secrets.
+  - Always use HTTPS in production.
+
+---
+
 ### **Disclaimer**
 
 This project is for educational purposes only.

@@ -12,3 +12,12 @@ requests
 anthropic
 google-generativeai
 transformers
+nsepython
+matplotlib
+backtrader
+streamlit
+kiteconnect
+breeze-connect
+alpaca-trade-api
+pysqlcipher3
+streamlit-authenticator

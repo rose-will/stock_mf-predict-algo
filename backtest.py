@@ -1,3 +1,15 @@
+# Advanced Stock Prediction & Analysis Bot
+#
+# Sources and inspiration:
+# - NSE-Option-Chain-Analyzer (GitHub): Option chain fetching and OI analysis
+#   https://github.com/saikiranboga/nse-option-chain-analyzer
+# - QuantInsti: Random Forest and ML in trading
+#   https://blog.quantinsti.com/random-forest-trading-strategy/
+# - NSE Academy & Courses: Technical analysis and options strategies
+#   https://www.nseindia.com/learn/nse-academy
+#
+# This file combines yfinance and NSEPython for data, advanced ML features, and both plotly and matplotlib for visualization.
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -20,6 +32,13 @@ import os
 from typing import List, Dict, Any, Optional
 from enum import Enum
 import re
+import matplotlib.pyplot as plt
+import backtrader as bt
+import tempfile
+from breeze_connect import BreezeConnect
+import zipfile  # For handling zipped CSVs
+import io  # For in-memory file handling
+from functools import lru_cache
 
 # Grok SDK imports
 try:
@@ -110,6 +129,13 @@ if PYDANTIC_AVAILABLE:
         recommendation: str = Field(description="Trading recommendation")
         target_price: Optional[float] = Field(description="Target price if available")
         stop_loss: Optional[float] = Field(description="Stop loss price if available")
+
+try:
+    from nsepython import option_chain, equity_history
+    NSEPYTHON_AVAILABLE = True
+except ImportError:
+    NSEPYTHON_AVAILABLE = False
+    print("Warning: nsepython not available. Install with: pip install nsepython")
 
 def get_usd_to_inr_rate():
     """Get current USD to INR exchange rate"""
@@ -536,8 +562,8 @@ def create_interactive_chart(df, symbol):
         print(f"Error creating chart: {e}")
         return None
 
-def calculate_technical_indicators(df):
-    """Calculate comprehensive technical indicators"""
+def calculate_technical_indicators(df, symbol=None, start_date=None, end_date=None, expiry=None, poll_oi_delta=False, oi_delta_interval=60):
+    """Calculate comprehensive technical indicators, including PCR/OI if available."""
     # Moving Averages
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
@@ -590,7 +616,23 @@ def calculate_technical_indicators(df):
     df['Price_Change_10'] = df['Close'].pct_change(periods=10)
 
     # Volatility
-    df['Volatility'] = df['Price_Change'].rolling(window=20).std()
+    close_series = df['Close']
+    if not isinstance(close_series, pd.Series):
+        close_series = pd.Series(close_series)
+    returns = close_series.pct_change().dropna()
+    df['Volatility'] = float(returns.std() * np.sqrt(252) * 100)
+
+    # PCR/OI (new)
+    pcr, total_call_oi, total_put_oi = fetch_pcr_oi(symbol) if symbol else (None, None, None)
+    df['PCR'] = pcr if pcr is not None else np.nan
+    df['Total_Call_OI'] = total_call_oi if total_call_oi is not None else np.nan
+    df['Total_Put_OI'] = total_put_oi if total_put_oi is not None else np.nan
+
+    # --- New: Historical and delta OI features ---
+    if symbol and start_date and end_date:
+        oi_feats = calculate_oi_features(symbol, start_date, end_date, expiry, poll_oi_delta, oi_delta_interval)
+        for k, v in oi_feats.items():
+            df[k] = v
 
     return df
 
@@ -646,44 +688,36 @@ def calculate_supertrend(df, atr_period=10, multiplier=3):
 
     return df
 
-def prepare_features(df):
-    """Prepare features for machine learning"""
-    feature_columns = [
-        'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26', 'MACD', 'MACD_Signal', 'MACD_Histogram',
-        'RSI', 'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width', 'Stoch_K', 'Stoch_D',
-        'ATR', 'Volume_Ratio', 'Price_Change', 'Price_Change_5', 'Price_Change_10', 'Volatility'
-    ]
-
-    # Create target variable (1 if price goes up next day, 0 if down)
+def prepare_features(df, feature_columns=None):
+    if feature_columns is None:
+        feature_columns = [
+            'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26', 'MACD', 'MACD_Signal', 'MACD_Histogram',
+            'RSI', 'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width', 'Stoch_K', 'Stoch_D',
+            'ATR', 'Volume_Ratio', 'Price_Change', 'Price_Change_5', 'Price_Change_10', 'Volatility',
+            'PCR', 'Total_Call_OI', 'Total_Put_OI',
+            'Hist_Call_OI_Mean', 'Hist_Put_OI_Mean', 'Hist_Call_OI_Std', 'Hist_Put_OI_Std',
+            'Delta_Call_OI_Mean', 'Delta_Put_OI_Mean'
+        ]
     df['Target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
-
-    # Remove NaN values
     df_clean = df.dropna()
-
+    # Only use columns that exist in df
+    feature_columns = [col for col in feature_columns if col in df_clean.columns]
     return df_clean[feature_columns], df_clean['Target']
 
-def train_prediction_model(df):
-    """Train machine learning model for price prediction"""
-    X, y = prepare_features(df)
-
-    if len(X) < 100:  # Need sufficient data
+def train_prediction_model(df, feature_columns=None):
+    X, y = prepare_features(df, feature_columns)
+    if len(X) < 100:
         return None, None, None
-
-    # Split data
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.ensemble import RandomForestClassifier
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    # Scale features
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
-
-    # Train Random Forest
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X_train_scaled, y_train)
-
-    # Calculate accuracy
     accuracy = model.score(X_test_scaled, y_test)
-
     return model, scaler, accuracy
 
 def generate_signals(df):
@@ -764,7 +798,10 @@ def calculate_confidence_score(df, model, scaler):
         feature_columns = [
             'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26', 'MACD', 'MACD_Signal', 'MACD_Histogram',
             'RSI', 'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width', 'Stoch_K', 'Stoch_D',
-            'ATR', 'Volume_Ratio', 'Price_Change', 'Price_Change_5', 'Price_Change_10', 'Volatility'
+            'ATR', 'Volume_Ratio', 'Price_Change', 'Price_Change_5', 'Price_Change_10', 'Volatility',
+            'PCR', 'Total_Call_OI', 'Total_Put_OI',
+            'Hist_Call_OI_Mean', 'Hist_Put_OI_Mean', 'Hist_Call_OI_Std', 'Hist_Put_OI_Std',
+            'Delta_Call_OI_Mean', 'Delta_Put_OI_Mean'
         ]
 
         latest_features = df[feature_columns].iloc[-1:].values
@@ -827,13 +864,23 @@ async def analyze_stock_advanced(stock_symbol, update=None):
     """Advanced stock analysis with AI news sentiment"""
     try:
         # Download data
-        data = yf.download(stock_symbol, period='1y', interval='1d')
+        end_date = datetime.today().strftime('%Y-%m-%d')
+        start_date = (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
+        data = get_historical_data(stock_symbol, start_date, end_date)
         if data is None or data.empty:
             return f"❌ No data found for {stock_symbol}"
 
         # Calculate indicators
-        data = calculate_technical_indicators(data)
+        data = calculate_technical_indicators(data, stock_symbol)
         data = calculate_supertrend(data)
+        # Show OI chart for Indian stocks
+        if stock_symbol.endswith('.NS') or stock_symbol in ['NIFTY', 'BANKNIFTY']:
+            try:
+                from nsepython import option_chain
+                oc = option_chain(stock_symbol.replace('.NS',''))
+                plot_oi_matplotlib(oc['filtered']['data'], stock_symbol)
+            except Exception as e:
+                print(f"OI chart error: {e}")
 
         # Train ML model
         model, scaler, accuracy = train_prediction_model(data)
@@ -852,9 +899,9 @@ async def analyze_stock_advanced(stock_symbol, update=None):
         detailed_signals = generate_trading_signals_detailed(data, confidence, recommendation)
 
         # Current price info
-        current_price = float(data['Close'].iloc[-1])
-        price_change = float(data['Close'].iloc[-1] - data['Close'].iloc[-2])
-        price_change_pct = float((price_change / data['Close'].iloc[-2]) * 100)
+        current_price = float(get_last(data, 'Close', 1)[0])
+        price_change = float(get_last(data, 'Close', 1)[0] - get_last(data, 'Close', 2)[0])
+        price_change_pct = float((price_change / get_last(data, 'Close', 2)[0]) * 100)
 
         # Check if it's a US stock and convert to INR if needed
         is_us = is_us_stock(stock_symbol)
@@ -922,13 +969,23 @@ def analyze_stock(stock_symbol):
     """Comprehensive stock analysis"""
     try:
         # Download data
-        data = yf.download(stock_symbol, period='1y', interval='1d')
+        end_date = datetime.today().strftime('%Y-%m-%d')
+        start_date = (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
+        data = get_historical_data(stock_symbol, start_date, end_date)
         if data is None or data.empty:
             return f"❌ No data found for {stock_symbol}"
 
         # Calculate indicators
-        data = calculate_technical_indicators(data)
+        data = calculate_technical_indicators(data, stock_symbol)
         data = calculate_supertrend(data)
+        # Show OI chart for Indian stocks
+        if stock_symbol.endswith('.NS') or stock_symbol in ['NIFTY', 'BANKNIFTY']:
+            try:
+                from nsepython import option_chain
+                oc = option_chain(stock_symbol.replace('.NS',''))
+                plot_oi_matplotlib(oc['filtered']['data'], stock_symbol)
+            except Exception as e:
+                print(f"OI chart error: {e}")
 
         # Train ML model
         model, scaler, accuracy = train_prediction_model(data)
@@ -940,9 +997,9 @@ def analyze_stock(stock_symbol):
         confidence, recommendation = calculate_confidence_score(data, model, scaler)
 
         # Current price info - convert to scalars
-        current_price = float(data['Close'].iloc[-1])
-        price_change = float(data['Close'].iloc[-1] - data['Close'].iloc[-2])
-        price_change_pct = float((price_change / data['Close'].iloc[-2]) * 100)
+        current_price = float(get_last(data, 'Close', 1)[0])
+        price_change = float(get_last(data, 'Close', 1)[0] - get_last(data, 'Close', 2)[0])
+        price_change_pct = float((price_change / get_last(data, 'Close', 2)[0]) * 100)
 
         # Check if it's a US stock and convert to INR if needed
         is_us = is_us_stock(stock_symbol)
@@ -983,12 +1040,12 @@ def analyze_stock(stock_symbol):
             analysis += "• No strong signals at the moment\n"
 
         # Key metrics - convert to scalars
-        rsi_value = float(data['RSI'].iloc[-1])
-        macd_value = float(data['MACD'].iloc[-1])
-        volume_ratio = float(data['Volume_Ratio'].iloc[-1])
-        atr_value = float(data['ATR'].iloc[-1])
-        sma20_value = float(data['SMA_20'].iloc[-1])
-        sma50_value = float(data['SMA_50'].iloc[-1])
+        rsi_value = float(get_last(data, 'RSI', 1)[0])
+        macd_value = float(get_last(data, 'MACD', 1)[0])
+        volume_ratio = float(get_last(data, 'Volume_Ratio', 1)[0])
+        atr_value = float(get_last(data, 'ATR', 1)[0])
+        sma20_value = float(get_last(data, 'SMA_20', 1)[0])
+        sma50_value = float(get_last(data, 'SMA_50', 1)[0])
 
         if is_us:
             # Convert SMA values to INR for US stocks
@@ -1034,11 +1091,13 @@ async def predict_command(update, context):
     stock_symbol = context.args[0].upper()
     await update.message.reply_text(f"🤖 Running ML prediction for {stock_symbol}... Please wait...")
     try:
-        data = yf.download(stock_symbol, period='1y', interval='1d')
+        end_date = datetime.today().strftime('%Y-%m-%d')
+        start_date = (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
+        data = get_historical_data(stock_symbol, start_date, end_date)
         if data is None or data.empty:
             await update.message.reply_text(f"❌ No data found for {stock_symbol}")
             return
-        data = calculate_technical_indicators(data)
+        data = calculate_technical_indicators(data, stock_symbol)
         model, scaler, accuracy = train_prediction_model(data)
         if model is None:
             await update.message.reply_text("❌ Insufficient data for ML prediction")
@@ -1046,11 +1105,11 @@ async def predict_command(update, context):
         confidence, recommendation = calculate_confidence_score(data, model, scaler)
 
         # Convert to scalars to avoid formatting issues
-        current_price = float(data['Close'].iloc[-1])
-        rsi_value = float(data['RSI'].iloc[-1])
-        macd_value = float(data['MACD'].iloc[-1])
-        supertrend_value = float(data['Supertrend'].iloc[-1])
-        volume_ratio = float(data['Volume_Ratio'].iloc[-1])
+        current_price = float(get_last(data, 'Close', 1)[0])
+        rsi_value = float(get_last(data, 'RSI', 1)[0])
+        macd_value = float(get_last(data, 'MACD', 1)[0])
+        supertrend_value = float(get_last(data, 'Supertrend', 1)[0])
+        volume_ratio = float(get_last(data, 'Volume_Ratio', 1)[0])
 
         prediction_message = (
             f"🤖 ML PREDICTION: {stock_symbol}\n\n"
@@ -1231,22 +1290,24 @@ async def ask_command(update, context):
         # For stocks, perform comprehensive analysis
         try:
             # Download stock data
-            data = yf.download(name, period='1y', interval='1d')
+            end_date = datetime.today().strftime('%Y-%m-%d')
+            start_date = (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
+            data = get_historical_data(name, start_date, end_date)
             if data is None or data.empty:
                 await update.message.reply_text(f"❌ No data found for {name}. Please check the symbol.")
                 return
 
             # Calculate technical indicators
-            data = calculate_technical_indicators(data)
+            data = calculate_technical_indicators(data, name)
             data = calculate_supertrend(data)
 
             # Get current market data
-            current_price = float(data['Close'].iloc[-1])
-            current_rsi = float(data['RSI'].iloc[-1])
-            current_macd = float(data['MACD'].iloc[-1])
-            current_volume = float(data['Volume'].iloc[-1])
-            sma20 = float(data['SMA_20'].iloc[-1])
-            sma50 = float(data['SMA_50'].iloc[-1])
+            current_price = float(get_last(data, 'Close', 1)[0])
+            current_rsi = float(get_last(data, 'RSI', 1)[0])
+            current_macd = float(get_last(data, 'MACD', 1)[0])
+            current_volume = float(get_last(data, 'Volume', 1)[0])
+            sma20 = float(get_last(data, 'SMA_20', 1)[0])
+            sma50 = float(get_last(data, 'SMA_50', 1)[0])
 
             # Calculate price differences
             price_diff = current_price - price
@@ -1404,22 +1465,24 @@ async def recommend_command(update, context):
         # For stocks, perform comprehensive analysis
         try:
             # Download stock data
-            data = yf.download(name, period='1y', interval='1d')
+            end_date = datetime.today().strftime('%Y-%m-%d')
+            start_date = (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
+            data = get_historical_data(name, start_date, end_date)
             if data is None or data.empty:
                 await update.message.reply_text(f"❌ No data found for {name}. Please check the symbol.")
                 return
 
             # Calculate technical indicators
-            data = calculate_technical_indicators(data)
+            data = calculate_technical_indicators(data, name)
             data = calculate_supertrend(data)
 
             # Get current market data
-            current_price = float(data['Close'].iloc[-1])
-            current_rsi = float(data['RSI'].iloc[-1])
-            current_macd = float(data['MACD'].iloc[-1])
-            sma20 = float(data['SMA_20'].iloc[-1])
-            sma50 = float(data['SMA_50'].iloc[-1])
-            atr = float(data['ATR'].iloc[-1]) if 'ATR' in data.columns else current_price * 0.02
+            current_price = float(get_last(data, 'Close', 1)[0])
+            current_rsi = float(get_last(data, 'RSI', 1)[0])
+            current_macd = float(get_last(data, 'MACD', 1)[0])
+            sma20 = float(get_last(data, 'SMA_20', 1)[0])
+            sma50 = float(get_last(data, 'SMA_50', 1)[0])
+            atr = float(get_last(data, 'ATR', 1)[0]) if 'ATR' in data.columns else current_price * 0.02
 
             # Determine market sentiment and trend
             if current_price > sma20 > sma50:
@@ -1453,9 +1516,12 @@ async def recommend_command(update, context):
             macd_signal = "BUY" if current_macd > 0 else "SELL"
 
             # Calculate volatility and risk metrics
-            returns = data['Close'].pct_change().dropna()
+            close_series = data['Close']
+            if not isinstance(close_series, pd.Series):
+                close_series = pd.Series(close_series)
+            returns = close_series.pct_change().dropna()
             volatility = float(returns.std() * np.sqrt(252) * 100)
-            max_drawdown = float(((data['Close'] - data['Close'].expanding().max()) / data['Close'].expanding().max() * 100).min())
+            max_drawdown = float(((close_series - close_series.expanding().max()) / close_series.expanding().max() * 100).min())
 
             # Determine overall recommendation
             if trend == "BULLISH" and rsi_signal == "BUY":
@@ -1669,7 +1735,9 @@ async def grok_command(update, context):
         await update.message.reply_text(f"🧠 Running Grok AI deep analysis for {stock_symbol}... Please wait...")
 
         # Download and prepare data
-        data = yf.download(stock_symbol, period='1y', interval='1d')
+        end_date = datetime.today().strftime('%Y-%m-%d')
+        start_date = (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
+        data = get_historical_data(stock_symbol, start_date, end_date)
         if data is None or data.empty:
             await update.message.reply_text(f"❌ No data found for {stock_symbol}")
             return
@@ -1679,13 +1747,13 @@ async def grok_command(update, context):
         data = calculate_supertrend(data)
 
         # Prepare technical data for Grok analysis
-        current_price = float(data['Close'].iloc[-1])
-        rsi_value = float(data['RSI'].iloc[-1])
-        macd_value = float(data['MACD'].iloc[-1])
-        volume_ratio = float(data['Volume_Ratio'].iloc[-1])
-        sma20_value = float(data['SMA_20'].iloc[-1])
-        sma50_value = float(data['SMA_50'].iloc[-1])
-        atr_value = float(data['ATR'].iloc[-1])
+        current_price = float(get_last(data, 'Close', 1)[0])
+        rsi_value = float(get_last(data, 'RSI', 1)[0])
+        macd_value = float(get_last(data, 'MACD', 1)[0])
+        volume_ratio = float(get_last(data, 'Volume_Ratio', 1)[0])
+        sma20_value = float(get_last(data, 'SMA_20', 1)[0])
+        sma50_value = float(get_last(data, 'SMA_50', 1)[0])
+        atr_value = float(get_last(data, 'ATR', 1)[0])
 
         technical_data = {
             'current_price': current_price,
@@ -1832,6 +1900,390 @@ def get_layman_advice(recommendation, confidence, hold_period=None):
     conf = f"(Confidence: {confidence:.0%})" if confidence is not None else ""
     return f"💡 Layman Advice: {action} {period} {conf}"
 
+def fetch_pcr_oi(symbol):
+    """Fetch PCR and OI for Indian stocks using nsepython. Returns (pcr, total_call_oi, total_put_oi) or (None, None, None) if not available."""
+    if not NSEPYTHON_AVAILABLE or not (symbol.endswith('.NS') or symbol in ['NIFTY', 'BANKNIFTY']):
+        return None, None, None
+    try:
+        oc = option_chain(symbol.replace('.NS',''))
+        data = oc['filtered']['data']
+        call_oi = 0
+        put_oi = 0
+        for row in data:
+            if 'CE' in row and row['CE'] and 'openInterest' in row['CE']:
+                call_oi += row['CE']['openInterest']
+            if 'PE' in row and row['PE'] and 'openInterest' in row['PE']:
+                put_oi += row['PE']['openInterest']
+        pcr = put_oi / call_oi if call_oi > 0 else np.nan
+        return pcr, call_oi, put_oi
+    except Exception as e:
+        print(f"PCR/OI fetch error: {e}")
+        return None, None, None
+
+# Add safe formatting utility
+def safe_fmt(val, fmt=".2f"):
+    try:
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return "N/A"
+        return f"{val:{fmt}}"
+    except Exception:
+        return str(val) if val is not None else "N/A"
+
+# Unified historical data fetcher
+def get_historical_data(symbol, start_date, end_date):
+    """Fetch historical OHLCV data for a symbol using NSEPython for Indian stocks, yfinance for others. Always return a DataFrame."""
+    if NSEPYTHON_AVAILABLE and (symbol.endswith('.NS') or symbol in ['NIFTY', 'BANKNIFTY']):
+        try:
+            # For indices, use 'INDEX'; for stocks, use 'EQ'
+            series = 'INDEX' if symbol in ['NIFTY', 'BANKNIFTY'] else 'EQ'
+            df = equity_history(symbol.replace('.NS',''), series, start_date, end_date)
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                raise ValueError("NSEPython returned no data")
+            df = df.rename(columns={
+                'CLOSE': 'Close',
+                'OPEN': 'Open',
+                'HIGH': 'High',
+                'LOW': 'Low',
+                'VOLUME': 'Volume',
+                'TIMESTAMP': 'Date'
+            })
+            df['Date'] = pd.to_datetime(df['Date'])
+            df = df.set_index('Date')
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            return df
+        except Exception as e:
+            print(f"NSEPython historical fetch error: {e}, falling back to yfinance.")
+    # Fallback to yfinance
+    df = yf.download(symbol, start=start_date, end=end_date, interval='1d')
+    if isinstance(df, np.ndarray):
+        # Convert to DataFrame if needed
+        if df.ndim == 2 and df.shape[1] == 5:
+            df = pd.DataFrame(df)
+            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        else:
+            df = pd.DataFrame(df)
+    return df
+
+def plot_oi_matplotlib(option_chain_df, symbol):
+    """Plot OI by strike using matplotlib for Indian stocks."""
+    try:
+        strikes = []
+        call_oi = []
+        put_oi = []
+        for row in option_chain_df:
+            strike = None
+            ce_oi = None
+            pe_oi = None
+            if 'CE' in row and row['CE']:
+                strike = row['CE'].get('strikePrice')
+                ce_oi = row['CE'].get('openInterest')
+            if 'PE' in row and row['PE']:
+                if strike is None:
+                    strike = row['PE'].get('strikePrice')
+                pe_oi = row['PE'].get('openInterest')
+            if strike is not None:
+                strikes.append(strike)
+                call_oi.append(ce_oi if ce_oi is not None else 0)
+                put_oi.append(pe_oi if pe_oi is not None else 0)
+        plt.figure(figsize=(12, 6))
+        plt.bar([s-5 for s in strikes], call_oi, width=5, color='green', label='Call OI')
+        plt.bar([s+5 for s in strikes], put_oi, width=5, color='red', label='Put OI')
+        plt.xlabel('Strike Price')
+        plt.ylabel('Open Interest')
+        plt.title(f'Open Interest by Strike for {symbol}')
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+    except Exception as e:
+        print(f"Error plotting OI chart: {e}")
+
+def get_last(df, col, n):
+    """Return the last n values from a DataFrame or Series column as a list, robust to type issues."""
+    try:
+        if isinstance(df, pd.DataFrame):
+            vals = df[col].tail(n).values.tolist()
+        elif isinstance(df, pd.Series):
+            vals = df.tail(n).values.tolist()
+        elif isinstance(df, np.ndarray):
+            vals = df[-n:].tolist()
+        else:
+            vals = list(df)[-n:]
+        return vals[::-1]  # Return in reverse order so [0] is most recent
+    except Exception:
+        return [None]*n
+
+def run_backtrader_backtest(df, signal_col='Signal', commission=0.001, slippage=0.0, risk_per_trade=0.02, initial_cash=100000, asset_col=None, extra_signal_cols=None, export_csv=None, export_html=None):
+    """
+    Run an advanced Backtrader backtest using the given DataFrame and signal column.
+    - commission: per-trade commission (e.g., 0.001 = 0.1%)
+    - slippage: per-trade slippage (fractional, e.g., 0.001 = 0.1%)
+    - risk_per_trade: fraction of capital to risk per trade (for position sizing)
+    - asset_col: if not None, use this column to support multi-asset backtesting
+    - extra_signal_cols: list of additional signal columns for ensemble/multi-signal logic
+    - export_csv: if not None, path to export trades to CSV
+    - export_html: if not None, path to export summary to HTML
+    """
+    import pandas as pd
+    import numpy as np
+    class PandasDataWithSignal(bt.feeds.PandasData):
+        lines = (signal_col,)
+        params = dict(bt.feeds.PandasData.params)
+        params['plot'] = False
+        params['datetime'] = None
+        params[signal_col] = -1
+        if asset_col:
+            lines = lines + (asset_col,)
+            params[asset_col] = -1
+        if extra_signal_cols:
+            for col in extra_signal_cols:
+                lines = lines + (col,)
+                params[col] = -1
+    class AdvancedSignalStrategy(bt.Strategy):
+        params = (('signal_col', signal_col), ('risk_per_trade', risk_per_trade), ('asset_col', asset_col), ('extra_signal_cols', extra_signal_cols))
+        def __init__(self):
+            self.signal = self.datas[0].lines.getline(self.p.signal_col)
+            self.order = None
+            self.size = 0
+            self.trades = []
+            self.pnl = []
+        def next(self):
+            if self.order:
+                return
+            sig = self.signal[0]
+            # Ensemble logic: combine signals if extra_signal_cols provided
+            if self.p.extra_signal_cols:
+                votes = [sig]
+                for i, col in enumerate(self.p.extra_signal_cols):
+                    votes.append(self.datas[0].lines.getline(col)[0])
+                sig = int(round(np.mean(votes)))
+            # Position sizing: risk_per_trade * cash / (price * stop_loss_pct)
+            price = self.datas[0].close[0]
+            stop_loss_pct = 0.02  # 2% stop loss default
+            cash = self.broker.get_cash()
+            risk_amt = cash * self.p.risk_per_trade
+            if stop_loss_pct > 0:
+                size = int(risk_amt / (price * stop_loss_pct))
+            else:
+                size = int(cash / price)
+            if sig == 1:
+                self.order = self.buy(size=size)
+            elif sig == -1:
+                self.order = self.sell(size=size)
+            # No action for 0 (hold)
+        def notify_order(self, order):
+            if order.status in [order.Completed, order.Canceled, order.Margin]:
+                self.order = None
+        def notify_trade(self, trade):
+            if trade.isclosed:
+                self.trades.append({
+                    'date': self.datas[0].datetime.date(0),
+                    'pnl': trade.pnl,
+                    'gross': trade.pnlcomm,
+                    'size': trade.size,
+                    'price': trade.price
+                })
+                self.pnl.append(trade.pnl)
+    cerebro = bt.Cerebro()
+    cerebro.addstrategy(AdvancedSignalStrategy, signal_col=signal_col, risk_per_trade=risk_per_trade, asset_col=asset_col, extra_signal_cols=extra_signal_cols)
+    datafeed = PandasDataWithSignal(df)
+    cerebro.adddata(datafeed)
+    cerebro.broker.setcash(initial_cash)
+    cerebro.broker.setcommission(commission=commission)
+    if slippage > 0:
+        cerebro.broker.set_slippage_perc(slippage)
+    print('Starting Portfolio Value: %.2f' % cerebro.broker.getvalue())
+    strat = cerebro.run()[0]
+    print('Final Portfolio Value: %.2f' % cerebro.broker.getvalue())
+    cerebro.plot()
+    # Performance reporting
+    trades_df = pd.DataFrame(strat.trades)
+    if not trades_df.empty:
+        sharpe = trades_df['pnl'].mean() / (trades_df['pnl'].std() + 1e-9) * np.sqrt(252)
+        max_dd = (trades_df['pnl'].cumsum().cummax() - trades_df['pnl'].cumsum()).max()
+        win_rate = (trades_df['pnl'] > 0).mean()
+        print(f"Sharpe Ratio: {sharpe:.2f}")
+        print(f"Max Drawdown: {max_dd:.2f}")
+        print(f"Win Rate: {win_rate:.1%}")
+        if export_csv:
+            trades_df.to_csv(export_csv, index=False)
+            print(f"Trades exported to {export_csv}")
+        if export_html:
+            trades_df.to_html(export_html)
+            print(f"Trades exported to {export_html}")
+    else:
+        print("No trades to report.")
+
+async def unified_command(update, context):
+    """Handle /unified <symbol> [expiry] [backend] [blackscholes] [start_date] [end_date]"""
+    if not update.message:
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /unified <symbol> [expiry] [backend] [blackscholes] [start_date] [end_date]\nExample: /unified NIFTY 17-Jul-2025 talib true 2024-01-01 2024-07-01")
+        return
+    symbol = args[0].upper()
+    expiry = args[1] if len(args) > 1 and args[1] != '-' else None
+    backend = args[2] if len(args) > 2 and args[2] in ['auto', 'talib', 'pandas'] else 'auto'
+    use_black_scholes = args[3].lower() == 'true' if len(args) > 3 else True
+    start_date = args[4] if len(args) > 4 else (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
+    end_date = args[5] if len(args) > 5 else datetime.today().strftime('%Y-%m-%d')
+    await update.message.reply_text(f"🔍 Running unified recommendation for {symbol}... Please wait...")
+    import io
+    import sys
+    buffer = io.StringIO()
+    sys_stdout = sys.stdout
+    sys.stdout = buffer
+    oi_chart_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+    backtest_csv_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+    try:
+        result = recommend_trades(
+            symbol=symbol,
+            expiry=expiry,
+            backend=backend,
+            use_black_scholes=use_black_scholes,
+            start_date=start_date,
+            end_date=end_date,
+            export_oi_chart_path=oi_chart_file.name,
+            export_backtest_csv_path=backtest_csv_file.name
+        )
+    except Exception as e:
+        print(f'Error: {e}')
+        result = {}
+    sys.stdout = sys_stdout
+    summary_text = buffer.getvalue()
+    await update.message.reply_text(f"📊 UNIFIED RECOMMENDATION FOR {symbol} (Backend: {backend}, Black-Scholes: {use_black_scholes})\n\n" + summary_text[:4000])
+    # Send files if available
+    if result.get('oi_chart_saved'):
+        with open(oi_chart_file.name, 'rb') as f:
+            await update.message.reply_document(f, filename=f'{symbol}_oi_chart.png', caption='OI Chart')
+    if result.get('backtest_csv_saved'):
+        with open(backtest_csv_file.name, 'rb') as f:
+            await update.message.reply_document(f, filename=f'{symbol}_backtest.csv', caption='Backtest Results')
+
+@lru_cache(maxsize=32)
+def fetch_historical_oi_cached(symbol, start_date, end_date, expiry):
+    # Wrapper for caching
+    return fetch_historical_oi(symbol, start_date, end_date, expiry)
+
+def fetch_historical_oi(symbol='NIFTY', start_date='01-01-2024', end_date='17-07-2025', expiry=None):
+    import calendar
+    from datetime import datetime, timedelta
+    import os
+    import time
+    import warnings
+    # Helper to get all dates between start and end
+    def daterange(start_date, end_date):
+        for n in range(int((end_date - start_date).days) + 1):
+            yield start_date + timedelta(n)
+    # Parse input dates
+    try:
+        start_dt = datetime.strptime(start_date, '%d-%m-%Y')
+        end_dt = datetime.strptime(end_date, '%d-%m-%Y')
+    except Exception:
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+    all_oi = []
+    for dt in daterange(start_dt, end_dt):
+        yyyy = dt.strftime('%Y')
+        mmm = dt.strftime('%b').upper()
+        ddmmyyyy = dt.strftime('%d%b%Y').upper()
+        url = f"https://archives.nseindia.com/content/historical/DERIVATIVES/{yyyy}/{mmm}/fo{ddmmyyyy}bhav.csv.zip"
+        try:
+            t0 = time.time()
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200:
+                continue
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+                with z.open(z.namelist()[0]) as f:
+                    df = pd.read_csv(f)
+                    if symbol.isalpha() and symbol.isupper() and (symbol.endswith('NIFTY') or symbol in ['NIFTY', 'BANKNIFTY']):
+                        instr = 'OPTIDX'
+                    else:
+                        instr = 'OPTSTK'
+                    df = df[(df['SYMBOL'] == symbol) & (df['INSTRUMENT'] == instr)]
+                    if expiry:
+                        df = df[df['EXPIRY_DT'] == expiry]
+                    df['DATE'] = dt
+                    all_oi.append(df[['DATE','EXPIRY_DT','STRIKE_PR','OPTION_TYP','OPEN_INT','CHG_IN_OI']])
+            t1 = time.time()
+            if t1-t0 > 5:
+                print(f"Warning: OI download for {dt.strftime('%Y-%m-%d')} was slow ({t1-t0:.1f}s)")
+        except Exception as e:
+            print(f"Warning: OI download failed for {dt.strftime('%Y-%m-%d')}: {e}")
+            continue
+        time.sleep(0.2)
+    if all_oi:
+        return pd.concat(all_oi, ignore_index=True)
+    print("Warning: No historical OI data found, filling with NaN.")
+    return pd.DataFrame()
+
+# --- Real-time OI delta tracking ---
+def fetch_option_chain_df(symbol, expiry=None):
+    """Fetch option chain as DataFrame (calls and puts OI by strike)."""
+    try:
+        from nsepython import option_chain
+        oc = option_chain(symbol.replace('.NS',''))
+        data = oc['filtered']['data']
+        rows = []
+        for row in data:
+            strike = row.get('strikePrice') or (row['CE']['strikePrice'] if 'CE' in row and row['CE'] else None)
+            call_oi = row['CE']['openInterest'] if 'CE' in row and row['CE'] else 0
+            put_oi = row['PE']['openInterest'] if 'PE' in row and row['PE'] else 0
+            rows.append({'strikePrice': strike, 'openInterest_call': call_oi, 'openInterest_put': put_oi})
+        df = pd.DataFrame(rows)
+        if expiry:
+            # Optionally filter by expiry if available in data
+            pass  # Not implemented for now
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+def fetch_oi_delta(symbol='NIFTY', expiry=None, interval=60):
+    """Poll option chain twice and compute OI delta for each strike (calls and puts)."""
+    import time
+    prev_df = fetch_option_chain_df(symbol, expiry)
+    time.sleep(interval)
+    curr_df = fetch_option_chain_df(symbol, expiry)
+    if prev_df.empty or curr_df.empty:
+        return pd.DataFrame()
+    merged = curr_df.set_index('strikePrice').join(prev_df.set_index('strikePrice'), lsuffix='_curr', rsuffix='_prev')
+    merged['delta_call_oi'] = merged['openInterest_call_curr'] - merged['openInterest_call_prev']
+    merged['delta_put_oi'] = merged['openInterest_put_curr'] - merged['openInterest_put_prev']
+    return merged[['delta_call_oi','delta_put_oi']]
+
+# --- Integration into feature engineering ---
+def calculate_oi_features(symbol, start_date, end_date, expiry=None, poll_oi_delta=False, oi_delta_interval=60):
+    features = {}
+    pcr, total_call_oi, total_put_oi = fetch_pcr_oi(symbol)
+    features['PCR'] = pcr
+    features['Total_Call_OI'] = total_call_oi
+    features['Total_Put_OI'] = total_put_oi
+    try:
+        hist_oi = fetch_historical_oi_cached(symbol, start_date, end_date, expiry)
+    except Exception as e:
+        print(f"Warning: OI cache error: {e}")
+        hist_oi = pd.DataFrame()
+    if not hist_oi.empty:
+        call_oi = hist_oi[hist_oi['OPTION_TYP']=='CE']['OPEN_INT']
+        put_oi = hist_oi[hist_oi['OPTION_TYP']=='PE']['OPEN_INT']
+        features['Hist_Call_OI_Mean'] = call_oi.mean()
+        features['Hist_Put_OI_Mean'] = put_oi.mean()
+        features['Hist_Call_OI_Std'] = call_oi.std()
+        features['Hist_Put_OI_Std'] = put_oi.std()
+    else:
+        features['Hist_Call_OI_Mean'] = features['Hist_Put_OI_Mean'] = np.nan
+        features['Hist_Call_OI_Std'] = features['Hist_Put_OI_Std'] = np.nan
+    if poll_oi_delta:
+        oi_delta = fetch_oi_delta(symbol, expiry, oi_delta_interval)
+        if not oi_delta.empty:
+            features['Delta_Call_OI_Mean'] = oi_delta['delta_call_oi'].mean()
+            features['Delta_Put_OI_Mean'] = oi_delta['delta_put_oi'].mean()
+        else:
+            features['Delta_Call_OI_Mean'] = features['Delta_Put_OI_Mean'] = np.nan
+    else:
+        features['Delta_Call_OI_Mean'] = features['Delta_Put_OI_Mean'] = np.nan
+    return features
+
 def main():
     print("🤖 Starting Advanced Stock Prediction Bot...")
     app = ApplicationBuilder().token(TOKEN).build()
@@ -1846,6 +2298,7 @@ def main():
     app.add_handler(CommandHandler('help', help_command))
     app.add_handler(CommandHandler('ask', ask_command))
     app.add_handler(CommandHandler('recommend', recommend_command))
+    app.add_handler(CommandHandler('unified', unified_command))
 
     # Add callback query handler for buttons
     app.add_handler(CallbackQueryHandler(button_callback))
@@ -1871,20 +2324,35 @@ if __name__ == '__main__':
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == 'test':
         print('Running test analysis for AAPL...')
-        data = yf.download('AAPL', period='1y', interval='1d')
+        end_date = datetime.today().strftime('%Y-%m-%d')
+        start_date = (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
+        data = get_historical_data('AAPL', start_date, end_date)
         if data is None or data.empty:
             print('No data for AAPL!')
             sys.exit(1)
         data = calculate_technical_indicators(data)
         data = calculate_supertrend(data)
         print('Indicators and Supertrend calculated successfully.')
-        # Try running the full analysis
-        try:
-            result = analyze_stock('AAPL')
-            print('Analysis result:')
-            print(result)
-        except Exception as e:
-            print('Error in analysis:', e)
+        # Example: generate dummy signals for demonstration
+        data['Signal'] = 0
+        data['ML_Signal'] = 0
+        data['Tech_Signal'] = 0
+        data.loc[data['Close'] > data['SMA_20'], 'Signal'] = 1
+        data.loc[data['Close'] < data['SMA_20'], 'Signal'] = -1
+        data['ML_Signal'] = data['Signal']  # For demo, copy main signal
+        data['Tech_Signal'] = data['Signal']  # For demo, copy main signal
+        # Now run the backtest:
+        run_backtrader_backtest(
+            data,
+            signal_col='Signal',
+            commission=0.001,
+            slippage=0.001,
+            risk_per_trade=0.02,
+            initial_cash=100000,
+            extra_signal_cols=['ML_Signal', 'Tech_Signal'],
+            export_csv='trades.csv',
+            export_html='trades.html'
+        )
         sys.exit(0)
     else:
         main()
