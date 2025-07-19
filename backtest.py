@@ -74,15 +74,26 @@ except ImportError:
     GROK_API_KEY = 'your_grok_api_key_here'
     GROK_API_URL = 'https://api.x.ai/v1/chat/completions'
 
-# Initialize Grok client if SDK is available
-grok_client = None
-if GROK_SDK_AVAILABLE and GROK_API_KEY and not GROK_API_KEY.startswith('your-'):
+# --- GROK ENABLED FLAG ---
+GROK_ENABLED = (
+    GROK_SDK_AVAILABLE and
+    'GROK_API_KEY' in globals() and
+    GROK_API_KEY and
+    not GROK_API_KEY.startswith('your-')
+)
+
+# Initialize Grok client if SDK is available and enabled
+if GROK_ENABLED:
     try:
         grok_client = Client(api_key=GROK_API_KEY)
         print("✅ Grok SDK client initialized successfully")
     except Exception as e:
         print(f"❌ Failed to initialize Grok client: {e}")
         grok_client = None
+        GROK_ENABLED = False
+else:
+    grok_client = None
+    print("Grok integration is disabled (missing SDK or API key). All Grok features will be skipped.")
 
 # Pydantic models for structured AI responses
 try:
@@ -235,13 +246,11 @@ def get_stock_news(symbol):
 
 def analyze_news_with_grok_sdk(news_items: List[str], symbol: str) -> Dict[str, Any]:
     """Analyze news sentiment using Grok SDK with structured output"""
-    if not GROK_SDK_AVAILABLE or not grok_client or not PYDANTIC_AVAILABLE:
+    if not GROK_ENABLED or not grok_client or not PYDANTIC_AVAILABLE:
         return analyze_news_with_ai_fallback(news_items, symbol)
-
     try:
         # For now, use fallback to avoid SDK method issues
         return analyze_news_with_ai_fallback(news_items, symbol)
-
     except Exception as e:
         print(f"Grok SDK analysis error: {e}")
         return analyze_news_with_ai_fallback(news_items, symbol)
@@ -295,7 +304,7 @@ def analyze_news_with_ai_fallback(news_items: List[str], symbol: str) -> Dict[st
                     print(f"OpenAI error: {error_msg}")
 
         # Try Grok REST API as fallback
-        if GROK_API_KEY and not GROK_API_KEY.startswith('your-'):
+        if GROK_ENABLED and GROK_API_KEY and not GROK_API_KEY.startswith('your-'):
             try:
                 prompt = (
                     f"Analyze the following news headlines for the stock {symbol} and provide:\n"
@@ -305,33 +314,27 @@ def analyze_news_with_ai_fallback(news_items: List[str], symbol: str) -> Dict[st
                     f"4. Impact (bullish/bearish/neutral)\n\n"
                     f"News:\n" + "\n".join(news_items)
                 )
-
                 headers = {
                     'Authorization': f'Bearer {GROK_API_KEY}',
                     'Content-Type': 'application/json'
                 }
-
                 data = {
                     'model': 'grok-beta',
                     'messages': [{'role': 'user', 'content': prompt}],
                     'max_tokens': 200,
                     'temperature': 0.3
                 }
-
                 response = requests.post(GROK_API_URL, headers=headers, json=data, timeout=30)
-
                 if response.status_code == 200:
                     result = response.json()
                     if result.get('choices') and result['choices'][0].get('message') and result['choices'][0]['message'].get('content'):
                         content = result['choices'][0]['message']['content']
-
                         # Simple parsing
                         lines = content.split('\n')
                         sentiment = lines[0].split(':')[-1].strip().lower() if len(lines) > 0 else 'neutral'
                         confidence = float(lines[1].split(':')[-1].strip()) if len(lines) > 1 else 0.5
                         summary = lines[2].split(':', 1)[-1].strip() if len(lines) > 2 else ''
                         impact = lines[3].split(':')[-1].strip().lower() if len(lines) > 3 else 'neutral'
-
                         return {
                             'sentiment': sentiment,
                             'confidence': confidence,
@@ -343,7 +346,6 @@ def analyze_news_with_ai_fallback(news_items: List[str], symbol: str) -> Dict[st
                         print(f"Grok REST API error: No content in response")
                 else:
                     print(f"Grok REST API error: {response.status_code} - {response.text}")
-
             except Exception as grok_error:
                 print(f"Grok REST API error: {grok_error}")
 
@@ -371,12 +373,11 @@ def analyze_news_with_ai(news_items, symbol):
 
 def get_advanced_stock_analysis_with_grok(symbol: str, technical_data: Dict[str, Any]) -> Dict[str, Any]:
     """Get advanced stock analysis using Grok AI"""
-    if not GROK_SDK_AVAILABLE or not grok_client:
+    if not GROK_ENABLED or not grok_client:
         return {
             'analysis': 'Grok SDK not available',
             'provider': 'Not Available'
         }
-
     try:
         # For now, return a basic analysis to avoid SDK method issues
         analysis_text = f"""
@@ -394,19 +395,16 @@ def get_advanced_stock_analysis_with_grok(symbol: str, technical_data: Dict[str,
 
         Recommendation: {'BUY' if technical_data.get('macd', 0) > 0 and technical_data.get('rsi', 0) < 70 else 'SELL' if technical_data.get('macd', 0) < 0 and technical_data.get('rsi', 0) > 30 else 'HOLD'}
         """
-
         return {
             'analysis': analysis_text,
             'provider': 'Grok AI (Basic)'
         }
-
     except Exception as e:
         print(f"Grok advanced analysis error: {e}")
         return {
             'analysis': f'Analysis error: {str(e)}',
             'provider': 'Grok AI (Error)'
         }
-
 
 def analyze_with_free_ai_fallback(stock_data, symbol):
     """Fallback to free AI services when Grok is not available"""

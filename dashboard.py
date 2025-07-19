@@ -14,7 +14,7 @@ from alpaca_trade_api.rest import REST as AlpacaREST
 from telegram import Bot
 import requests
 import config
-import pysqlcipher3.dbapi2 as sqlcipher
+import sqlite3
 import tempfile
 import os
 import jwt
@@ -1416,13 +1416,13 @@ if page == 'Parameter Optimization':
             if selected is not None:
                 st.write(f'Optimal SMA: {results_df.loc[selected, "SMA"]}, Risk: {results_df.loc[selected, "Risk"]}')
 
-# --- SQLite Encrypted DB for Multi-user Persistence ---
-DB_PATH = 'user_data_encrypted.db'
-DB_KEY = getattr(config, 'DB_ENCRYPTION_KEY', 'mysecretkey')
+# --- SQLite DB for Multi-user Persistence ---
+DB_PATH = 'user_data.db'
+DB_KEY = getattr(config, 'DB_ENCRYPTION_KEY', 'mysecretkey')  # No longer used
 
 def get_db():
-    conn = sqlcipher.connect(DB_PATH)
-    conn.execute(f"PRAGMA key='{DB_KEY}';")
+    conn = sqlite3.connect(DB_PATH)
+    # No encryption pragma needed
     # User data table
     conn.execute('''CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,

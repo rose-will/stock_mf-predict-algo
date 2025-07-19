@@ -9,6 +9,8 @@ pydantic
 plotly
 kaleido
 requests
+urllib3
+six
 anthropic
 google-generativeai
 transformers
@@ -19,5 +21,4 @@ streamlit
 kiteconnect
 breeze-connect
 alpaca-trade-api
-pysqlcipher3
 streamlit-authenticator
